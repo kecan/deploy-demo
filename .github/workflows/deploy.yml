@@ -37,8 +37,8 @@ jobs:
 
       - name: Create deployment package
         run: |
-          mkdir -p deploy-package
-          cp -r client/dist deploy-package/client-dist
+          mkdir -p deploy-package/client
+          cp -r client/dist deploy-package/client/
           cp -r server deploy-package/server
           cp ecosystem.config.cjs deploy-package/
           rm -rf deploy-package/server/node_modules
@@ -87,15 +87,15 @@ jobs:
               BACKUP_DIR="backup-$(date +%Y%m%d-%H%M%S)"
               mkdir -p $BACKUP_DIR
               cp -r server $BACKUP_DIR/ 2>/dev/null || true
-              cp -r client-dist $BACKUP_DIR/ 2>/dev/null || true
+              cp -r client $BACKUP_DIR/ 2>/dev/null || true
             fi
 
             # 解压新版本
             tar -xzf /tmp/deploy-package.tar.gz -C /tmp/
 
             # 更新文件
-            rm -rf client-dist server
-            mv /tmp/deploy-package/client-dist ./
+            rm -rf client server
+            mv /tmp/deploy-package/client ./
             mv /tmp/deploy-package/server ./
             cp /tmp/deploy-package/ecosystem.config.cjs ./
 
