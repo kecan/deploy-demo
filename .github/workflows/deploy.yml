@@ -1,0 +1,124 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # 允许手动触发
+
+env:
+  SERVER_HOST: ${{ secrets.SERVER_HOST }}
+  SERVER_USER: ${{ secrets.SERVER_USER }}
+  DEPLOY_PATH: /home/${{ secrets.SERVER_USER }}/deploy-demo
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            client/package-lock.json
+            server/package-lock.json
+
+      - name: Install client dependencies
+        working-directory: ./client
+        run: npm ci
+
+      - name: Build client
+        working-directory: ./client
+        run: npm run build
+
+      - name: Create deployment package
+        run: |
+          mkdir -p deploy-package
+          cp -r client/dist deploy-package/client-dist
+          cp -r server deploy-package/server
+          cp ecosystem.config.cjs deploy-package/
+          rm -rf deploy-package/server/node_modules
+          rm -rf deploy-package/server/data
+          tar -czf deploy-package.tar.gz deploy-package
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-package
+          path: deploy-package.tar.gz
+          retention-days: 7
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-package
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to server
+        run: |
+          # 上传部署包
+          scp deploy-package.tar.gz ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/tmp/
+
+          # 远程执行部署脚本
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'ENDSSH'
+            set -e
+
+            # 创建部署目录
+            mkdir -p ~/deploy-demo
+            cd ~/deploy-demo
+
+            # 备份旧版本（如果存在）
+            if [ -d "server" ]; then
+              BACKUP_DIR="backup-$(date +%Y%m%d-%H%M%S)"
+              mkdir -p $BACKUP_DIR
+              cp -r server $BACKUP_DIR/ 2>/dev/null || true
+              cp -r client-dist $BACKUP_DIR/ 2>/dev/null || true
+            fi
+
+            # 解压新版本
+            tar -xzf /tmp/deploy-package.tar.gz -C /tmp/
+
+            # 更新文件
+            rm -rf client-dist server
+            mv /tmp/deploy-package/client-dist ./
+            mv /tmp/deploy-package/server ./
+            cp /tmp/deploy-package/ecosystem.config.cjs ./
+
+            # 安装依赖
+            cd server
+            npm ci --only=production
+
+            # 创建数据目录
+            mkdir -p data
+
+            # 使用 PM2 重启应用
+            cd ..
+            pm2 reload ecosystem.config.cjs --env production || pm2 start ecosystem.config.cjs --env production
+
+            # 清理
+            rm -f /tmp/deploy-package.tar.gz
+            rm -rf /tmp/deploy-package
+
+            echo "✅ Deployment completed successfully!"
+          ENDSSH
+
+      - name: Health check
+        run: |
+          sleep 5
+          curl -f http://${{ secrets.SERVER_HOST }}:4000/api/health || exit 1
+          echo "✅ Health check passed!"
